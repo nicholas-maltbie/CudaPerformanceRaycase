@@ -1,0 +1,9 @@
+*.o
+*.png
+*.swp
+*.txt
+.vscode
+.vscode/*
+ray
+ray_noconst
+notes
