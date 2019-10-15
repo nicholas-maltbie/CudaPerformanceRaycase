@@ -18,7 +18,7 @@
 #include "common/book.h"
 #include "common/cpu_bitmap.h"
 
-#define MAX_SPHERES 100
+#define MAX_SPHERES 1000
 
 #define rnd( x ) (x * rand() / RAND_MAX)
 #define INF     2e10f
@@ -39,15 +39,21 @@ struct Sphere {
     }
 };
 
-__constant__ Sphere s[MAX_SPHERES];
+__constant__ Sphere sconstant[MAX_SPHERES];
 
-__global__ void kernel( unsigned char *ptr, int dim, int spheres) {
+__global__ void kernel( Sphere *sglobal, unsigned char *ptr, int dim,
+    int spheres, bool isGlobal) {
     // map from threadIdx/BlockIdx to pixel position
     int x = threadIdx.x + blockIdx.x * blockDim.x;
     int y = threadIdx.y + blockIdx.y * blockDim.y;
     int offset = x + y * blockDim.x * gridDim.x;
     float   ox = (x - dim/2);
     float   oy = (y - dim/2);
+
+    Sphere* s = sconstant;
+    if (isGlobal) {
+        s = sglobal;
+    }
 
     float   r=0, g=0, b=0;
     float   maxz = -INF;
@@ -75,14 +81,21 @@ struct DataBlock {
 };
 
 int main( int argc, char** argv ) {
-    if (argc != 4) {
-        printf("Usage: %s DIM SPHERES NUM_THREADS\n", argv[0]);
+    if (argc != 6) {
+        printf("Usage: %s DIM SPHERES NUM-THREADS RENDER GLOBAL\n", argv[0]);
+        printf("  DIM - Dimension of image (square) in pixels\n");
+        printf("  SPHERES - Number of spheres to draw\n");
+        printf("  NUM-THREADS - Number of threads to use per block\n");
+        printf("  RENDER - Value of 0 for do not render, 1 for render\n");
+        printf("  GLOBAL - Value of 0 for constant memory, 1 for global\n");
         return 1;
     }
 
     int dim = atoi(argv[1]);
     int spheres = atoi(argv[2]);
     int num_threads = atoi(argv[3]);
+    bool render = atoi(argv[4]) == 1;
+    bool isGlobal = atoi(argv[5]) == 1;
 
     DataBlock   data;
     // capture the start time
@@ -110,14 +123,25 @@ int main( int argc, char** argv ) {
         temp_s[i].z = rnd( 1000.0f ) - 500;
         temp_s[i].radius = rnd( 100.0f ) + 20;
     }
-    HANDLE_ERROR( cudaMemcpyToSymbol( s, temp_s, 
-                                sizeof(Sphere) * spheres) );
+
+    Sphere          *sGlobal;
+    if (isGlobal) {
+        HANDLE_ERROR( cudaMalloc( (void**)&sGlobal,
+                                  sizeof(Sphere) * spheres ) );
+        HANDLE_ERROR( cudaMemcpy( sGlobal, temp_s,
+                                    sizeof(Sphere) * spheres,
+                                    cudaMemcpyHostToDevice ) );
+    }
+    else {
+        HANDLE_ERROR( cudaMemcpyToSymbol( sconstant, temp_s, 
+                                    sizeof(Sphere) * spheres) );
+    }
     free( temp_s );
 
     // generate a bitmap from our sphere data
     dim3    grids(dim/num_threads,dim/num_threads);
     dim3    threads(num_threads,num_threads);
-    kernel<<<grids,threads>>>( dev_bitmap, dim, spheres );
+    kernel<<<grids,threads>>>( sGlobal, dev_bitmap, dim, spheres, isGlobal);
 
     // copy our bitmap back from the GPU for display
     HANDLE_ERROR( cudaMemcpy( bitmap.get_ptr(), dev_bitmap,
@@ -139,6 +163,8 @@ int main( int argc, char** argv ) {
     HANDLE_ERROR( cudaFree( dev_bitmap ) );
 
     // display
-    bitmap.display_and_exit();
+    if (render) {
+        bitmap.display_and_exit();
+    }
 }
 
